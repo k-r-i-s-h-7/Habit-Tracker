@@ -1,14 +1,16 @@
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
-import flask
-
+from flask import Flask
+import sqlite3
 app = Flask(__name__)
 from flask import request, jsonify
 SCOPES = ['https://www.googleapis.com/auth/calendar',
           'https://www.googleapis.com/auth/gmail.modify',
           'https://www.googleapis.com/auth/presentations',
           'https://www.googleapis.com/auth/gmail.readonly']
+
+# ---------------------------------------     Basic functions for calendar  -------------------------------------
 
 def generate_rrule(weekdays, repeat_until=None):
     day_map = {
@@ -34,7 +36,7 @@ def generate_rrule(weekdays, repeat_until=None):
 
 from datetime import datetime
 
-# Define your scope
+
 
 def schedule_daily_habit(summary, start_time, end_time, attendees_emails=[], repeat_until=None, days =[]):# Schedules daily habits for user into calendar
     # Authenticate
@@ -177,8 +179,61 @@ def list_events_for_day():
 
     return clean_events
 
+3 # ---------------------------------------     SQL Working  -------------------------------------
+def insert_habit(cursor, desc, priority, preferences, habit_type, time, remarks):
+    cursor.execute("""
+        INSERT INTO Habits (Desc, Priority, Prefernces, Type, Time, Remarks)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (desc, priority, preferences, habit_type, time, remarks))
 
-@app.route('/schedule_habit', methods=['POST']):
+    return cursor.lastrowid  # Returns the new Habit ID
+
+def insert_habit_days(cursor, habit_id, days_list):
+    day_tuples = [(habit_id, day) for day in days_list]
+    cursor.executemany("INSERT INTO HabitDays (HabitID, Day) VALUES (?, ?)", day_tuples)
+
+def insert_habit_progress(cursor, habit_id, completed_days, total_days):
+    cursor.execute("""
+        INSERT INTO HabitTimes (HabitID, No_of_days_Completed, Total_no_of_days)
+        VALUES (?, ?, ?)
+    """, (habit_id, completed_days, total_days))
+def update_habit(cursor, habit_id, desc=None, priority=None, preferences=None, habit_type=None, time=None, remarks=None):
+    fields = []
+    values = []
+
+    if desc:
+        fields.append("Desc = ?")
+        values.append(desc)
+    if priority:
+        fields.append("Priority = ?")
+        values.append(priority)
+    if preferences:
+        fields.append("Prefernces = ?")
+        values.append(preferences)
+    if habit_type:
+        fields.append("Type = ?")
+        values.append(habit_type)
+    if time:
+        fields.append("Time = ?")
+        values.append(time)
+    if remarks:
+        fields.append("Remarks = ?")
+        values.append(remarks)
+
+    values.append(habit_id)
+
+    if fields:
+        query = f"UPDATE Habits SET {', '.join(fields)} WHERE ID = ?"
+        cursor.execute(query, values)
+
+def update_habit_days(cursor, habit_id, new_days):
+    # Delete existing days
+    cursor.execute("DELETE FROM HabitDays WHERE HabitID = ?", (habit_id,))
+    # Insert new days
+    insert_habit_days(cursor, habit_id, new_days)
+
+
+@app.route('/schedule_habit', methods=['POST'])
 def schedule_habit():
     data = request.json
     summary = data['summary']
@@ -207,5 +262,7 @@ def reschedule_habit():
 def list_events():
     events = list_events_for_day()
     return jsonify(events)
+
+
 
 
