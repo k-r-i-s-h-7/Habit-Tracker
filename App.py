@@ -10,6 +10,9 @@ SCOPES = ['https://www.googleapis.com/auth/calendar',
           'https://www.googleapis.com/auth/presentations',
           'https://www.googleapis.com/auth/gmail.readonly']
 
+from langchain.memory import ConversationBufferMemory
+from langchain.schema import HumanMessage, AIMessage, SystemMessage
+from langchain.chains import ConversationChain
 from langchain.prompts import ChatPromptTemplate
 
 from langchain_groq import ChatGroq
@@ -354,7 +357,80 @@ def generate_profile(user_data):
     sliced_remark = response.content.split("</think>", 1)[1].strip()
     return sliced_remark
 
+# ---------------------------------------     cHATBOT    -------------------------------------
 
+memory = ConversationBufferMemory(return_messages=True)
+
+# Prompt to summarize SQL results
+sql_prompt = ChatPromptTemplate.from_messages([
+    ("system", "You are an assistant that summarizes SQL query results to help the user improve their habits. Focus on identifying habits that need attention and explain how the user can improve their consistency. SQL input is in the form: HabitID, Description, Priority, Preferences, Type, Time, Remarks"),
+    ("human", "{input}")
+])
+
+# General Personal Assistant prompt
+general_prompt = ChatPromptTemplate.from_messages([
+    ("system", """You are a Personal Assistant that helps the user improve on himself, by giving him advice on how to be more productive, more organized, and more efficient. 
+You are friendly, patient, and insightful. You understand the user's context and provide actionable, thoughtful suggestions.
+
+Start by analyzing their current habits based on tracked data and guide them step by step toward improvement.
+"""),
+    ("human", "{input}")
+])
+
+# SQL Retriever Function
+def retrieve_low_completion_habits():
+    conn = sqlite3.connect('student.db')
+    cursor = conn.cursor()
+
+    query = """
+    SELECT H.* FROM Habits H
+    JOIN HabitTimes HT ON H.ID = HT.HabitID
+    WHERE HT.No_of_days_Completed < HT.Total_no_of_days * 3 / 4;
+    """
+    cursor.execute(query)
+    results = cursor.fetchall()
+    conn.close()
+    return results
+
+# SQL Summary Chain
+def get_sql_summary_with_context(sql_results):
+    input_text = f"Summarize these habit records and give suggestions: {sql_results}"
+    chain = sql_prompt | llm
+    summary = chain.invoke({"input": input_text})
+    memory.save_context({"input": input_text}, {"output": summary.content})
+    return summary.content
+
+# General Personal Assistant Chain
+def get_general_advice(user_input):
+    chain = general_prompt | llm
+    response = chain.invoke({"input": user_input})
+    memory.save_context({"input": user_input}, {"output": response.content})
+    return response.content
+
+# Flask endpoint
+count= 0
+@app.route("/habit-summary", methods=["GET", "POST"])
+def habit_summary():
+    global count
+    try:
+        # Step 1: Retrieve low-completion habits from database
+        habits = retrieve_low_completion_habits()
+
+        # Step 2: Generate SQL-based summary
+        if count==0:
+            sql_summary = get_sql_summary_with_context(habits)
+            count=count+1
+
+        # Step 3: Optional: Get user query from request
+        user_input = request.json.get("user_input") if request.is_json else None
+        advice = get_general_advice(user_input) if user_input else None
+
+        return jsonify({
+            "habit_summary": sql_summary,
+            "assistant_advice": advice
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 # ---------------------------------------     Flask App  -------------------------------------
 
@@ -407,6 +483,73 @@ def get_habit_by_id_route():
     habit = get_habit_by_id(habit_id)
     return jsonify(habit)
 
+@app.route('/insert_habit', methods=['POST'])
+def insert_habit_route():
+    data = request.json
+    desc = data['desc']
+    priority = data['priority']
+    preferences = data['preferences']
+    habit_type = data['habit_type']
+    time = data['time']
+    remarks = data['remarks']
+
+    connection = sqlite3.connect("student.db")
+    cursor = connection.cursor()
+    habit_id = insert_habit(cursor, desc, priority, preferences, habit_type, time, remarks)
+    connection.commit()
+    connection.close()
+
+
+    return jsonify({"habit_id": habit_id})
+
+@app.route('/update_habit', methods=['POST'])
+def update_habit_route():
+    data = request.json
+    habit_id = data['habit_id']
+    desc = data.get('desc')
+    priority = data.get('priority')
+    preferences = data.get('preferences')
+    habit_type = data.get('habit_type')
+    time = data.get('time')
+    remarks = data.get('remarks')
+
+    connection = sqlite3.connect("student.db")
+    cursor = connection.cursor()
+    update_habit(cursor, habit_id, desc, priority, preferences, habit_type, time, remarks)
+    connection.commit()
+    connection.close()
+    
+    return jsonify({"status": "Habit updated successfully"})
+
+@app.route('/update_habit_progress', methods=['POST'])
+def update_habit_progress_route():
+    data = request.json
+    habit_id = data['habit_id']
+    completed_days = data.get('completed_days')
+    total_days = data.get('total_days')
+
+    connection = sqlite3.connect("student.db")
+    cursor = connection.cursor()
+    update_habit_progress(cursor, habit_id, completed_days, total_days)
+    connection.commit()
+    connection.close()
+
+    return jsonify({"status": "Habit progress updated successfully"})
+
+@app.route('/update_habit_days', methods=['POST'])
+def update_habit_days_route():
+    data = request.json
+    habit_id = data['habit_id']
+    new_days = data['new_days']
+
+    connection = sqlite3.connect("student.db")
+    cursor = connection.cursor()
+    update_habit_days(cursor, habit_id, new_days)
+    connection.commit()
+    connection.close()
+
+    return jsonify({"status": "Habit days updated successfully"})
+
 @app.route('/habit_no_of_days', methods=['POST'])
 def habit_no_of_days_route():
     data = request.json
@@ -414,4 +557,11 @@ def habit_no_of_days_route():
     days = habit_no_of_days(habit_id)
     return jsonify(days)
 
-@app
+@app.route('/remark', methods=['POST'])
+def remark_route():
+    data = request.json
+    text = data['text']
+    habit_id = data['habit_id']
+    Remarker(text, habit_id)
+    return jsonify({"status": "Remark updated successfully"})
+
